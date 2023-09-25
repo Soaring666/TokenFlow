@@ -41,7 +41,7 @@ class Preprocess(nn.Module):
         elif self.sd_version == '2.0':
             model_key = "stabilityai/stable-diffusion-2-base"
         elif self.sd_version == '1.5' or self.sd_version == 'ControlNet':
-            model_key = "runwayml/stable-diffusion-v1-5"
+            model_key = "/home/flyvideo/PCH/diffusion/stable-diffusion/stable-diffusion-v1-5"
         elif self.sd_version == 'depth':
             model_key = "stabilityai/stable-diffusion-2-depth"
         else:
@@ -190,9 +190,9 @@ class Preprocess(nn.Module):
         frames = [Image.open(path).convert('RGB') for path in paths]
         if frames[0].size[0] == frames[0].size[1]:
             frames = [frame.resize((512, 512), resample=Image.Resampling.LANCZOS) for frame in frames]
-        frames = torch.stack([T.ToTensor()(frame) for frame in frames]).to(torch.float16).to(self.device)
+        frames = torch.stack([T.ToTensor()(frame) for frame in frames]).to(torch.float16).to(self.device)       #(40, 3, 512, 512)
         # encode to latents
-        latents = self.encode_imgs(frames, deterministic=True).to(torch.float16).to(self.device)
+        latents = self.encode_imgs(frames, deterministic=True).to(torch.float16).to(self.device)        #(40, 4, 64, 64)
         return paths, frames, latents
 
     @torch.no_grad()
@@ -268,7 +268,7 @@ class Preprocess(nn.Module):
                         timesteps_to_save,
                         inversion_prompt=''):
         self.scheduler.set_timesteps(num_steps)
-        cond = self.get_text_embeds(inversion_prompt, "")[1].unsqueeze(0)
+        cond = self.get_text_embeds(inversion_prompt, "")[1].unsqueeze(0)       #(1, 77, 768)
         latent_frames = self.latents
 
         inverted_x = self.ddim_inversion(cond,
@@ -287,11 +287,11 @@ class Preprocess(nn.Module):
 def prep(opt):
     # timesteps to save
     if opt.sd_version == '2.1':
-        model_key = "stabilityai/stable-diffusion-2-1-base"
+        model_key = "../stable-diffusion-2-1-base"
     elif opt.sd_version == '2.0':
         model_key = "stabilityai/stable-diffusion-2-base"
     elif opt.sd_version == '1.5' or opt.sd_version == 'ControlNet':
-        model_key = "runwayml/stable-diffusion-v1-5"
+        model_key = "/home/flyvideo/PCH/diffusion/stable-diffusion/stable-diffusion-v1-5"
     elif opt.sd_version == 'depth':
         model_key = "stabilityai/stable-diffusion-2-depth"
     toy_scheduler = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
@@ -334,13 +334,13 @@ if __name__ == "__main__":
     device = 'cuda'
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_path', type=str,
-                        default='data/woman-running.mp4') 
+                        default='data/wolf.mp4') 
     parser.add_argument('--H', type=int, default=512, 
                         help='for non-square videos, we recommand using 672 x 384 or 384 x 672, aspect ratio 1.75')
     parser.add_argument('--W', type=int, default=512, 
                         help='for non-square videos, we recommand using 672 x 384 or 384 x 672, aspect ratio 1.75')
     parser.add_argument('--save_dir', type=str, default='latents')
-    parser.add_argument('--sd_version', type=str, default='2.1', choices=['1.5', '2.0', '2.1', 'ControlNet', 'depth'],
+    parser.add_argument('--sd_version', type=str, default='1.5', choices=['1.5', '2.0', '2.1', 'ControlNet', 'depth'],
                         help="stable diffusion version")
     parser.add_argument('--steps', type=int, default=500)
     parser.add_argument('--batch_size', type=int, default=40)
