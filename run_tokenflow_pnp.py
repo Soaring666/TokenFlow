@@ -31,11 +31,11 @@ class TokenFlow(nn.Module):
         sd_version = config["sd_version"]
         self.sd_version = sd_version
         if sd_version == '2.1':
-            model_key = "stabilityai/stable-diffusion-2-1-base"
+            model_key = "../stable-diffusion-2-1-base"
         elif sd_version == '2.0':
             model_key = "stabilityai/stable-diffusion-2-base"
         elif sd_version == '1.5':
-            model_key = "runwayml/stable-diffusion-v1-5"
+            model_key = "/home/flyvideo/PCH/diffusion/stable-diffusion/stable-diffusion-v1-5"
         elif sd_version == 'depth':
             model_key = "stabilityai/stable-diffusion-2-depth"
         else:
@@ -59,7 +59,7 @@ class TokenFlow(nn.Module):
         # data
         self.latents_path = self.get_latents_path()
         # load frames
-        self.paths, self.frames, self.latents, self.eps = self.get_data()
+        self.paths, self.frames, self.latents, self.eps = self.get_data()           #eps是从x_0至x_999单步所加的噪声
         if self.sd_version == 'depth':
             self.depth_maps = self.prepare_depth_maps()
 
@@ -196,15 +196,15 @@ class TokenFlow(nn.Module):
     def denoise_step(self, x, t, indices):
         # register the time step and features in pnp injection modules
         source_latents = load_source_latents_t(t, self.latents_path)[indices]
-        latent_model_input = torch.cat([source_latents] + ([x] * 2))
+        latent_model_input = torch.cat([source_latents] + ([x] * 2))        #source是计算inversion prompt，后面的两个x是用来计算生成的prompt和negative prompt，x是x_t噪声
         if self.sd_version == 'depth':
             latent_model_input = torch.cat([latent_model_input, torch.cat([self.depth_maps[indices]] * 3)], dim=1)
 
-        register_time(self, t.item())
+        register_time(self, t.item())       #给所有注意力层的增加一个键值t，并赋值为当前时间步
 
         # compute text embeddings
         text_embed_input = torch.cat([self.pnp_guidance_embeds.repeat(len(indices), 1, 1),
-                                      torch.repeat_interleave(self.text_embeds, len(indices), dim=0)])
+                                      torch.repeat_interleave(self.text_embeds, len(indices), dim=0)])      #(15, 77, 768)分别是inv_prompt、cond_prompt、neg_prompt
 
         # apply the denoising network
         noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embed_input)['sample']
@@ -221,10 +221,10 @@ class TokenFlow(nn.Module):
     def batched_denoise_step(self, x, t, indices):
         batch_size = self.config["batch_size"]
         denoised_latents = []
-        pivotal_idx = torch.randint(batch_size, (len(x)//batch_size,)) + torch.arange(0,len(x),batch_size) 
+        pivotal_idx = torch.randint(batch_size, (len(x)//batch_size,)) + torch.arange(0,len(x),batch_size)      #随机选择key frames
             
         register_pivotal(self, True)
-        self.denoise_step(x[pivotal_idx], t, indices[pivotal_idx])
+        self.denoise_step(x[pivotal_idx], t, indices[pivotal_idx])      #对key frames进行去噪生成，只保留第一层自注意力的中间结果，保存在内部变量self.kf_attn中
         register_pivotal(self, False)
         for i, b in enumerate(range(0, len(x), batch_size)):
             register_batch_idx(self, i)
@@ -254,7 +254,7 @@ class TokenFlow(nn.Module):
         pnp_f_t = int(self.config["n_timesteps"] * self.config["pnp_f_t"])
         pnp_attn_t = int(self.config["n_timesteps"] * self.config["pnp_attn_t"])
         self.init_method(conv_injection_t=pnp_f_t, qk_injection_t=pnp_attn_t)
-        noisy_latents = self.scheduler.add_noise(self.latents, self.eps, self.scheduler.timesteps[0])
+        noisy_latents = self.scheduler.add_noise(self.latents, self.eps, self.scheduler.timesteps[0])       #即从x_0一步加噪声到x_t，其实可以直接从文件中取到
         edited_frames = self.sample_loop(noisy_latents, torch.arange(self.config["n_frames"]))
         save_video(edited_frames, f'{self.config["output_path"]}/tokenflow_PnP_fps_10.mp4')
         save_video(edited_frames, f'{self.config["output_path"]}/tokenflow_PnP_fps_20.mp4', fps=20)

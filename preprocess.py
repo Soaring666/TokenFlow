@@ -37,7 +37,7 @@ class Preprocess(nn.Module):
             print(f'[INFO] using hugging face custom model key: {hf_key}')
             model_key = hf_key
         elif self.sd_version == '2.1':
-            model_key = "stabilityai/stable-diffusion-2-1-base"
+            model_key = "../stable-diffusion-2-1-base"
         elif self.sd_version == '2.0':
             model_key = "stabilityai/stable-diffusion-2-base"
         elif self.sd_version == '1.5' or self.sd_version == 'ControlNet':
@@ -227,6 +227,7 @@ class Preprocess(nn.Module):
             if save_latents and t in timesteps_to_save:
                 torch.save(latent_frames, os.path.join(save_path, 'latents', f'noisy_latents_{t}.pt'))
         torch.save(latent_frames, os.path.join(save_path, 'latents', f'noisy_latents_{t}.pt'))
+        print("save ddim inversion latents successfully!")
         return latent_frames
 
     @torch.no_grad()
@@ -326,27 +327,29 @@ def prep(opt):
         os.mkdir(os.path.join(save_path, f'frames'))
     for i, frame in enumerate(recon_frames):
         T.ToPILImage()(frame).save(os.path.join(save_path, f'frames', f'{i:05d}.png'))
+    print("save recon images successfully!")
     frames = (recon_frames * 255).to(torch.uint8).cpu().permute(0, 2, 3, 1)
     write_video(os.path.join(save_path, f'inverted.mp4'), frames, fps=10)
+    print("save recon video successfully!")
 
 
 if __name__ == "__main__":
     device = 'cuda'
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_path', type=str,
-                        default='data/wolf.mp4') 
+                        default='data/woman-running.mp4') 
     parser.add_argument('--H', type=int, default=512, 
                         help='for non-square videos, we recommand using 672 x 384 or 384 x 672, aspect ratio 1.75')
     parser.add_argument('--W', type=int, default=512, 
                         help='for non-square videos, we recommand using 672 x 384 or 384 x 672, aspect ratio 1.75')
     parser.add_argument('--save_dir', type=str, default='latents')
-    parser.add_argument('--sd_version', type=str, default='1.5', choices=['1.5', '2.0', '2.1', 'ControlNet', 'depth'],
+    parser.add_argument('--sd_version', type=str, default='2.1', choices=['1.5', '2.0', '2.1', 'ControlNet', 'depth'],
                         help="stable diffusion version")
     parser.add_argument('--steps', type=int, default=500)
     parser.add_argument('--batch_size', type=int, default=40)
     parser.add_argument('--save_steps', type=int, default=50)
     parser.add_argument('--n_frames', type=int, default=40)
-    parser.add_argument('--inversion_prompt', type=str, default='a woman running')
+    parser.add_argument('--inversion_prompt', type=str, default='')
     opt = parser.parse_args()
     video_path = opt.data_path
     save_video_frames(video_path, img_size=(opt.W, opt.H))

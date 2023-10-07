@@ -120,7 +120,7 @@ def register_extended_attention_pnp(model, injection_schedule):
             q = self.to_q(x)
             k = self.to_k(encoder_hidden_states)
             v = self.to_v(encoder_hidden_states)
-
+            #将原始视频中的注意力特征替换到生成视频中，只替换了q和k
             if self.injection_schedule is not None and (self.t in self.injection_schedule or self.t == 1000):
                 # inject unconditional
                 q[n_frames:2 * n_frames] = q[:n_frames]
@@ -128,16 +128,16 @@ def register_extended_attention_pnp(model, injection_schedule):
                 # inject conditional
                 q[2 * n_frames:] = q[:n_frames]
                 k[2 * n_frames:] = k[:n_frames]
-
+            ###soruce表示使用原视频的prompt，uncond表示neg_prompt，cond表示生成视频的prompt
             k_source = k[:n_frames]
-            k_uncond = k[n_frames:2 * n_frames].reshape(1, n_frames * sequence_length, -1).repeat(n_frames, 1, 1)
+            k_uncond = k[n_frames:2 * n_frames].reshape(1, n_frames * sequence_length, -1).repeat(n_frames, 1, 1)       #即对所有帧 (5, 5*4096, 320)
             k_cond = k[2 * n_frames:].reshape(1, n_frames * sequence_length, -1).repeat(n_frames, 1, 1)
 
             v_source = v[:n_frames]
             v_uncond = v[n_frames:2 * n_frames].reshape(1, n_frames * sequence_length, -1).repeat(n_frames, 1, 1)
             v_cond = v[2 * n_frames:].reshape(1, n_frames * sequence_length, -1).repeat(n_frames, 1, 1)
 
-            q_source = self.head_to_batch_dim(q[:n_frames])
+            q_source = self.head_to_batch_dim(q[:n_frames])     #分成多个注意力头
             q_uncond = self.head_to_batch_dim(q[n_frames:2 * n_frames])
             q_cond = self.head_to_batch_dim(q[2 * n_frames:])
             k_source = self.head_to_batch_dim(k_source)
@@ -177,7 +177,7 @@ def register_extended_attention_pnp(model, injection_schedule):
                     out_source.append(torch.bmm(sim_source_b.softmax(dim=-1), v_src[frame: frame+ b, j]))
                     out_uncond.append(torch.bmm(sim_uncond_b.softmax(dim=-1), v_uncond[frame: frame+ b, j]))
                     out_cond.append(torch.bmm(sim_cond.softmax(dim=-1), v_cond[frame: frame+ b, j]))
-
+                #src得到的是独自的注意力，uncond和cond得到的是单体对全体的注意力，但是两者得出的shape是相同的
                 out_source = torch.cat(out_source, dim=0)
                 out_uncond = torch.cat(out_uncond, dim=0) 
                 out_cond = torch.cat(out_cond, dim=0) 
@@ -194,12 +194,12 @@ def register_extended_attention_pnp(model, injection_schedule):
             out_cond = torch.cat(out_cond_all, dim=0)
                 
             out = torch.cat([out_source, out_uncond, out_cond], dim=0)
-            out = self.batch_to_head_dim(out)
+            out = self.batch_to_head_dim(out)       #即T_base，但对于inv_prompt没有使用全体注意力
 
             return to_out(out)
 
         return forward
-
+    ###此处是给UNet下采样和上采样模块的自注意力层都修改，下面的只给上采样的4-11层修改
     for _, module in model.unet.named_modules():
         if isinstance_str(module, "BasicTransformerBlock"):
             module.attn1.forward = sa_forward(module.attn1)
@@ -323,7 +323,7 @@ def make_tokenflow_attention_block(block_class: Type[torch.nn.Module]) -> Type[t
                 norm_hidden_states = self.norm1(hidden_states)
 
             norm_hidden_states = norm_hidden_states.view(3, n_frames, sequence_length, dim)
-            if self.pivotal_pass:
+            if self.pivotal_pass:       #attn模块的标记
                 self.pivot_hidden_states = norm_hidden_states
             else:
                 idx1 = []
@@ -333,7 +333,7 @@ def make_tokenflow_attention_block(block_class: Type[torch.nn.Module]) -> Type[t
                     batch_idxs.append(self.batch_idx - 1)
                 
                 sim = batch_cosine_sim(norm_hidden_states[0].reshape(-1, dim),
-                                        self.pivot_hidden_states[0][batch_idxs].reshape(-1, dim))
+                                        self.pivot_hidden_states[0][batch_idxs].reshape(-1, dim))       #(8*4096, 4096)  计算每八帧与随机选择的八帧中关键帧的余弦相似度（每个特征点）
                 if len(batch_idxs) == 2:
                     sim1, sim2 = sim.chunk(2, dim=1)
                     # sim: n_frames * seq_len, len(batch_idxs) * seq_len
@@ -360,7 +360,7 @@ def make_tokenflow_attention_block(block_class: Type[torch.nn.Module]) -> Type[t
                 self.kf_attn_output = self.attn_output 
             else:
                 batch_kf_size, _, _ = self.kf_attn_output.shape
-                self.attn_output = self.kf_attn_output.view(3, batch_kf_size // 3, sequence_length, dim)[:,
+                self.attn_output = self.kf_attn_output.view(3, batch_kf_size // 3, sequence_length, dim)[:,             #选取相应的key帧
                                    batch_idxs]  # 3, n_frames, seq_len, dim --> 3, len(batch_idxs), seq_len, dim
             if self.use_ada_layer_norm_zero:
                 self.attn_output = gate_msa.unsqueeze(1) * self.attn_output
@@ -387,7 +387,7 @@ def make_tokenflow_attention_block(block_class: Type[torch.nn.Module]) -> Type[t
                     attn_output2 = attn_output2.view(3, n_frames, sequence_length, dim)
                     attn_output = w1 * attn_output1 + (1 - w1) * attn_output2
                 else:
-                    attn_output = self.attn_output[:,0].gather(dim=1, index=idx1.unsqueeze(-1).repeat(1, 1, dim))
+                    attn_output = self.attn_output[:,0].gather(dim=1, index=idx1.unsqueeze(-1).repeat(1, 1, dim))       #(3, 8*4096, 320) 从key帧中检索出相应的最近距离localtion
 
                 attn_output = attn_output.reshape(
                         batch_size, sequence_length, dim)  # 3 * n_frames, seq_len, dim
