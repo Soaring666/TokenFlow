@@ -103,3 +103,12 @@ def seed_everything(seed):
     np.random.seed(seed)
 
 
+###############use clip for image embedding###############
+# import imageio
+
+# def img_embedding(img_path, feature_extractor, image_encoder):
+#     image = imageio.imread(img_path)
+#     image = feature_extractor(images=image, return_tensors="pt").pixel_values
+#     image_embeds = image_encoder(image).image_embeds
+    
+#     return image_embeds

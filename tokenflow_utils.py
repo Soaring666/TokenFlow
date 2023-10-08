@@ -332,7 +332,7 @@ def make_tokenflow_attention_block(block_class: Type[torch.nn.Module]) -> Type[t
                 if self.batch_idx > 0:
                     batch_idxs.append(self.batch_idx - 1)
                 
-                sim = batch_cosine_sim(norm_hidden_states[0].reshape(-1, dim),
+                sim = batch_cosine_sim(norm_hidden_states[0].reshape(-1, dim),                          #计算NN field
                                         self.pivot_hidden_states[0][batch_idxs].reshape(-1, dim))       #(8*4096, 4096)  计算每八帧与随机选择的八帧中关键帧的余弦相似度（每个特征点）
                 if len(batch_idxs) == 2:
                     sim1, sim2 = sim.chunk(2, dim=1)

@@ -63,7 +63,7 @@ class TokenFlow(nn.Module):
         if self.sd_version == 'depth':
             self.depth_maps = self.prepare_depth_maps()
 
-        self.text_embeds = self.get_text_embeds(config["prompt"], config["negative_prompt"])
+        self.text_embeds = self.get_text_embeds(config["negative_prompt"], config["prompt"])
         pnp_inversion_prompt = self.get_pnp_inversion_prompt()
         self.pnp_guidance_embeds = self.get_text_embeds(pnp_inversion_prompt, pnp_inversion_prompt).chunk(2)[0]
     
@@ -124,8 +124,46 @@ class TokenFlow(nn.Module):
         print("Number of frames: ", self.config["n_frames"])
         return os.path.join(latents_path, 'latents')
 
+    ####################add image embedding using blip-2#######################
     @torch.no_grad()
-    def get_text_embeds(self, prompt, negative_prompt, batch_size=1):
+    def get_text_embeds(self, negative_prompt, prompt, batch_size=1):
+        from lavis.models import load_model_and_preprocess
+
+        cond_image = Image.open("/home/flyvideo/PCH/diffusion/blip_diffusion/LAVIS/projects/blip-diffusion/images/dog.png").convert("RGB")
+        cond_subject = "dog"
+        tgt_subject = "pig"                     #generate object
+        text_prompt = "dancing on the bed"      #prompt to describe generate image
+
+        model, vis_preprocess, txt_preprocess = load_model_and_preprocess("blip_diffusion", "base", device="cuda", is_eval=True)
+        cond_subjects = [txt_preprocess["eval"](cond_subject)]
+        tgt_subjects = [txt_preprocess["eval"](tgt_subject)]
+        text_prompt = [txt_preprocess["eval"](text_prompt)]
+
+        ##1.preprocess cond image
+        cond_image.resize((256, 256))
+        cond_images = vis_preprocess["eval"](cond_image).unsqueeze(0).cuda()
+
+        samples = {
+            "cond_images": cond_images,
+            "cond_subject": cond_subjects,
+            "tgt_subject": tgt_subjects,
+            "prompt": text_prompt,
+        }
+
+        text_embeddings = model.generate(
+            samples,
+            seed=42,
+            guidance_scale=7.5,
+            neg_prompt=negative_prompt,
+            height=512,
+            width=512,
+            batch_size=batch_size,
+        )
+        
+
+
+
+
         # Tokenize text and get embeddings
         text_input = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
                                     truncation=True, return_tensors='pt')
@@ -140,6 +178,24 @@ class TokenFlow(nn.Module):
         # Cat for final embeddings
         text_embeddings = torch.cat([uncond_embeddings] * batch_size + [text_embeddings] * batch_size)
         return text_embeddings
+
+    ##################origin####################
+    # @torch.no_grad()
+    # def get_text_embeds(self, negative_prompt, prompt, batch_size=1):
+    #     # Tokenize text and get embeddings
+    #     text_input = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
+    #                                 truncation=True, return_tensors='pt')
+    #     text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
+
+    #     # Do the same for unconditional embeddings
+    #     uncond_input = self.tokenizer(negative_prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
+    #                                   return_tensors='pt')
+
+    #     uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
+
+    #     # Cat for final embeddings
+    #     text_embeddings = torch.cat([uncond_embeddings] * batch_size + [text_embeddings] * batch_size)
+    #     return text_embeddings
 
     @torch.no_grad()
     def encode_imgs(self, imgs, batch_size=VAE_BATCH_SIZE, deterministic=False):
