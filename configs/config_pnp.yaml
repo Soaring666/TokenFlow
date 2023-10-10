@@ -1,22 +1,26 @@
 # general
 seed: 1
 device: 'cuda'
-output_path: 'tokenflow-results'
+output_path: 'tokenflow-blip-cond_image-results'
 
 # data
-data_path: 'data/woman-running'
+data_path: 'data/cxk'
 latents_path: 'latents' # should be the same as 'save_dir' arg used in preprocess
 n_inversion_steps: 500 # for retrieving the latents of the inversion
 n_frames: 40
 
+#cond image feature
+pnp_cond_image_feature_path: 'pnp_cond_image_feature_extract/wt'
+pnp_cond_t: 1
+
 # diffusion
-sd_version: '2.1'
+sd_version: '1.5'
 guidance_scale: 7.5
 n_timesteps: 50
-prompt: "a iron man running"
+prompt: "playing ball"
 negative_prompt: "ugly, blurry, low res, unrealistic, unaesthetic"
 batch_size: 8
 
 # pnp params -- injection thresholds ∈ [0, 1]
-pnp_attn_t: 0.3
-pnp_f_t: 0.6
+pnp_attn_t: 0.5
+pnp_f_t: 0.8

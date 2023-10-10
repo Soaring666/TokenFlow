@@ -4,6 +4,7 @@ import os
 
 from util import isinstance_str, batch_cosine_sim
 
+
 def register_pivotal(diffusion_model, is_pivotal):
     for _, module in diffusion_model.named_modules():
         # If for some reason this has a different name, create an issue and I'll fix it
@@ -19,6 +20,8 @@ def register_batch_idx(diffusion_model, batch_idx):
 
 def register_time(model, t):
     conv_module = model.unet.up_blocks[1].resnets[1]
+    setattr(conv_module, 't', t)
+    conv_module = model.unet.down_blocks[2].resnets[1]
     setattr(conv_module, 't', t)
     down_res_dict = {0: [0, 1], 1: [0, 1], 2: [0, 1]}
     up_res_dict = {1: [0, 1, 2], 2: [0, 1, 2], 3: [0, 1, 2]}
@@ -45,6 +48,73 @@ def load_source_latents_t(t, latents_path):
     assert os.path.exists(latents_t_path), f'Missing latents at t {t} path {latents_t_path}'
     latents = torch.load(latents_t_path)
     return latents
+
+
+########conv add######
+def register_conv_add(model, add_schedule, cond_feature):
+    def conv_forward(self):
+        def forward(input_tensor, temb):
+            hidden_states = input_tensor
+
+            hidden_states = self.norm1(hidden_states)
+            hidden_states = self.nonlinearity(hidden_states)
+
+            if self.upsample is not None:
+                # upsample_nearest_nhwc fails with large batch sizes. see https://github.com/huggingface/diffusers/issues/984
+                if hidden_states.shape[0] >= 64:
+                    input_tensor = input_tensor.contiguous()
+                    hidden_states = hidden_states.contiguous()
+                input_tensor = self.upsample(input_tensor)
+                hidden_states = self.upsample(hidden_states)
+            elif self.downsample is not None:
+                input_tensor = self.downsample(input_tensor)
+                hidden_states = self.downsample(hidden_states)
+
+            hidden_states = self.conv1(hidden_states)
+
+            if temb is not None:
+                temb = self.time_emb_proj(self.nonlinearity(temb))[:, :, None, None]
+
+            if temb is not None and self.time_embedding_norm == "default":
+                hidden_states = hidden_states + temb
+
+            hidden_states = self.norm2(hidden_states)
+
+            if temb is not None and self.time_embedding_norm == "scale_shift":
+                scale, shift = torch.chunk(temb, 2, dim=1)
+                hidden_states = hidden_states * (1 + scale) + shift
+
+            hidden_states = self.nonlinearity(hidden_states)
+
+            hidden_states = self.dropout(hidden_states)
+            hidden_states = self.conv2(hidden_states)
+
+            if self.conv_shortcut is not None:
+                input_tensor = self.conv_shortcut(input_tensor)
+
+            ################ use cond feature and gen feature ########
+            if self.t in self.add_schedule:
+                w1 = 0.1
+                w2 = 0.9
+                batch_size, _, _, _ = hidden_states.shape
+                per_batch = int(batch_size // 3)
+                self.cond_feature = self.cond_feature.unsqueeze(0).repeat(batch_size, 1, 1, 1)
+                new_states = w1 * self.cond_feature + w2 * hidden_states
+                # hidden_states[per_batch:] = new_states[per_batch:]        #在上采样的时候还会被重新替换，因此这边替换基本没有作用
+                hidden_states = new_states
+            ##########################################################
+
+            output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
+
+            return output_tensor
+
+        return forward
+
+    conv_module = model.unet.down_blocks[2].resnets[1]
+    conv_module.forward = conv_forward(conv_module)
+    setattr(conv_module, 'add_schedule', add_schedule)
+    setattr(conv_module, 'cond_feature', cond_feature)
+######################
 
 def register_conv_injection(model, injection_schedule):
     def conv_forward(self):
@@ -83,12 +153,15 @@ def register_conv_injection(model, injection_schedule):
 
             hidden_states = self.dropout(hidden_states)
             hidden_states = self.conv2(hidden_states)
+
+            ###################这一段是唯一的和源码不同的代码##############
             if self.injection_schedule is not None and (self.t in self.injection_schedule or self.t == 1000):
                 source_batch_size = int(hidden_states.shape[0] // 3)
                 # inject unconditional
                 hidden_states[source_batch_size:2 * source_batch_size] = hidden_states[:source_batch_size]
                 # inject conditional
                 hidden_states[2 * source_batch_size:] = hidden_states[:source_batch_size]
+            #############################################################
 
             if self.conv_shortcut is not None:
                 input_tensor = self.conv_shortcut(input_tensor)
@@ -296,7 +369,7 @@ def register_extended_attention(model):
 def make_tokenflow_attention_block(block_class: Type[torch.nn.Module]) -> Type[torch.nn.Module]:
 
     class TokenFlowBlock(block_class):
-
+        #用于实现关键帧到其他帧的特征传播
         def forward(
             self,
             hidden_states,

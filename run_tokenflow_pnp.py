@@ -66,6 +66,10 @@ class TokenFlow(nn.Module):
         self.text_embeds = self.get_text_embeds(config["negative_prompt"], config["prompt"])
         pnp_inversion_prompt = self.get_pnp_inversion_prompt()
         self.pnp_guidance_embeds = self.get_text_embeds(pnp_inversion_prompt, pnp_inversion_prompt).chunk(2)[0]
+
+        
+        #cond image feature map path
+        self.cond_feature_map_path = config["pnp_cond_image_feature_path"]
     
     @torch.no_grad()   
     def prepare_depth_maps(self, model_type='DPT_Large', device='cuda'):
@@ -129,15 +133,15 @@ class TokenFlow(nn.Module):
     def get_text_embeds(self, negative_prompt, prompt, batch_size=1):
         from lavis.models import load_model_and_preprocess
 
-        cond_image = Image.open("/home/flyvideo/PCH/diffusion/blip_diffusion/LAVIS/projects/blip-diffusion/images/dog.png").convert("RGB")
-        cond_subject = "dog"
-        tgt_subject = "pig"                     #generate object
-        text_prompt = "dancing on the bed"      #prompt to describe generate image
+        cond_image = Image.open("/home/flyvideo/PCH/diffusion/TokenFlow/data/wt.jpg").convert("RGB")
+        cond_subject = "man"
+        tgt_subject = "man"                     #generate object
+        # prompt = "running on the road"      #prompt to describe generate image
 
-        model, vis_preprocess, txt_preprocess = load_model_and_preprocess("blip_diffusion", "base", device="cuda", is_eval=True)
+        blip_diffusion, vis_preprocess, txt_preprocess = load_model_and_preprocess("blip_diffusion", "base", device="cuda", is_eval=True)
         cond_subjects = [txt_preprocess["eval"](cond_subject)]
         tgt_subjects = [txt_preprocess["eval"](tgt_subject)]
-        text_prompt = [txt_preprocess["eval"](text_prompt)]
+        text_prompt = [txt_preprocess["eval"](prompt)]
 
         ##1.preprocess cond image
         cond_image.resize((256, 256))
@@ -150,7 +154,7 @@ class TokenFlow(nn.Module):
             "prompt": text_prompt,
         }
 
-        text_embeddings = model.generate(
+        text_embeddings = blip_diffusion.generate(
             samples,
             seed=42,
             guidance_scale=7.5,
@@ -160,23 +164,6 @@ class TokenFlow(nn.Module):
             batch_size=batch_size,
         )
         
-
-
-
-
-        # Tokenize text and get embeddings
-        text_input = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
-                                    truncation=True, return_tensors='pt')
-        text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
-
-        # Do the same for unconditional embeddings
-        uncond_input = self.tokenizer(negative_prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
-                                      return_tensors='pt')
-
-        uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
-
-        # Cat for final embeddings
-        text_embeddings = torch.cat([uncond_embeddings] * batch_size + [text_embeddings] * batch_size)
         return text_embeddings
 
     ##################origin####################
@@ -234,7 +221,7 @@ class TokenFlow(nn.Module):
         save_video(frames, f'{self.config["output_path"]}/input_fps20.mp4', fps=20)
         save_video(frames, f'{self.config["output_path"]}/input_fps30.mp4', fps=30)
         # encode to latents
-        latents = self.encode_imgs(frames, deterministic=True).to(torch.float16).to(self.device)
+        latents = self.encode_imgs(frames, deterministic=True).to(torch.float16).to(self.device)        #(40, 4, 64, 64)
         # get noise
         eps = self.get_ddim_eps(latents, range(self.config["n_frames"])).to(torch.float16).to(self.device)
         return paths, frames, latents, eps
@@ -245,14 +232,14 @@ class TokenFlow(nn.Module):
         noisy_latent = torch.load(latents_path)[indices].to(self.device)
         alpha_prod_T = self.scheduler.alphas_cumprod[noisest]
         mu_T, sigma_T = alpha_prod_T ** 0.5, (1 - alpha_prod_T) ** 0.5
-        eps = (noisy_latent - mu_T * latent) / sigma_T
+        eps = (noisy_latent - mu_T * latent) / sigma_T      #从第0步到999步所加的全部噪声
         return eps
 
     @torch.no_grad()
     def denoise_step(self, x, t, indices):
         # register the time step and features in pnp injection modules
-        source_latents = load_source_latents_t(t, self.latents_path)[indices]
-        latent_model_input = torch.cat([source_latents] + ([x] * 2))        #source是计算inversion prompt，后面的两个x是用来计算生成的prompt和negative prompt，x是x_t噪声
+        source_latents = load_source_latents_t(t, self.latents_path)[indices]       #得到t时刻的latent，但是src会是981，x是999步的
+        latent_model_input = torch.cat([source_latents] + ([x] * 2))        #source是计算inversion prompt，后面的两个x是用来计算生成的prompt和negative prompt，x是x_t噪声，x比src晚了一个时间步
         if self.sd_version == 'depth':
             latent_model_input = torch.cat([latent_model_input, torch.cat([self.depth_maps[indices]] * 3)], dim=1)
 
@@ -260,7 +247,16 @@ class TokenFlow(nn.Module):
 
         # compute text embeddings
         text_embed_input = torch.cat([self.pnp_guidance_embeds.repeat(len(indices), 1, 1),
-                                      torch.repeat_interleave(self.text_embeds, len(indices), dim=0)])      #(15, 77, 768)分别是inv_prompt、cond_prompt、neg_prompt
+                                      torch.repeat_interleave(self.text_embeds, len(indices), dim=0)])      #(15, 77, dim)分别是inv_prompt、neg_prompt、cond_prompt
+                                                                                                            #1.5中dim=768，2.1中dim=1024
+        
+        #################### init conv add module ###############
+        cond_feature_map = torch.load(os.path.join(self.cond_feature_map_path, f"down_blocks2_resnets1_timestep_{t}.pt"))[0]    #(1280, 16, 16)
+        pnp_cond_t = int(self.config["n_timesteps"] * self.config["pnp_cond_t"])
+        self.cond_add_timesteps = self.scheduler.timesteps[:pnp_cond_t]
+        register_conv_add(self, self.cond_add_timesteps, cond_feature_map)
+
+        #########################################################
 
         # apply the denoising network
         noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embed_input)['sample']
@@ -309,8 +305,8 @@ class TokenFlow(nn.Module):
         self.save_vae_recon()
         pnp_f_t = int(self.config["n_timesteps"] * self.config["pnp_f_t"])
         pnp_attn_t = int(self.config["n_timesteps"] * self.config["pnp_attn_t"])
-        self.init_method(conv_injection_t=pnp_f_t, qk_injection_t=pnp_attn_t)
-        noisy_latents = self.scheduler.add_noise(self.latents, self.eps, self.scheduler.timesteps[0])       #即从x_0一步加噪声到x_t，其实可以直接从文件中取到
+        self.init_method(conv_injection_t=pnp_f_t, qk_injection_t=pnp_attn_t)                               #修改unet中的forward结构，只进行特征的替换，没有特征变换操作即不用额外训练
+        noisy_latents = self.scheduler.add_noise(self.latents, self.eps, self.scheduler.timesteps[0])       #从x_0一步加噪声到x_t，latents为x_0，其实可以直接从文件中取到
         edited_frames = self.sample_loop(noisy_latents, torch.arange(self.config["n_frames"]))
         save_video(edited_frames, f'{self.config["output_path"]}/tokenflow_PnP_fps_10.mp4')
         save_video(edited_frames, f'{self.config["output_path"]}/tokenflow_PnP_fps_20.mp4', fps=20)
@@ -327,6 +323,11 @@ class TokenFlow(nn.Module):
             T.ToPILImage()(decoded_latents[i]).save(f'{self.config["output_path"]}/img_ode/%05d.png' % i)
 
         return decoded_latents
+
+    ###############get obj image embedding in unet############   
+    def get_cond_feature(self,):
+        cond_image = Image.open("/home/flyvideo/PCH/diffusion/TokenFlow/data/wt.jpg").convert("RGB")
+        pass
 
 
 def run(config):

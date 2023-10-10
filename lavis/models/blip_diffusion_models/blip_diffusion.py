@@ -485,6 +485,7 @@ class BlipDiffusion(BaseModel):
         prompt_strength=1.0,
         prompt_reps=20,
         use_ddim=False,
+        batch_size=1,
     ):
         if controller is not None:
             self._register_attention_refine(controller)
@@ -522,40 +523,39 @@ class BlipDiffusion(BaseModel):
                 ctx_embeddings=None,
             )[0]
 
-            # For classifier free guidance, we need to do two forward passes.
-            # Here we concatenate the unconditional and text embeddings into a single batch
-            # to avoid doing two forward passes
-            text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
+            text_embeddings = torch.cat([uncond_embeddings] * batch_size + [text_embeddings] * batch_size)
+            # text_embeddings = torch.cat([uncond_embeddings, text_embeddings])
 
-        if seed is not None:
-            generator = torch.Generator(device=self.device)
-            generator = generator.manual_seed(seed)
+        return text_embeddings
+        # if seed is not None:
+        #     generator = torch.Generator(device=self.device)
+        #     generator = generator.manual_seed(seed)
 
-        latents = self._init_latent(latents, height, width, generator, batch_size=1)
+        # latents = self._init_latent(latents, height, width, generator, batch_size=1)
 
-        scheduler = self.pndm_scheduler if not use_ddim else self.ddim_scheduler
+        # scheduler = self.pndm_scheduler if not use_ddim else self.ddim_scheduler
 
-        # set timesteps
-        extra_set_kwargs = {}
-        scheduler.set_timesteps(num_inference_steps, **extra_set_kwargs)
+        # # set timesteps
+        # extra_set_kwargs = {}
+        # scheduler.set_timesteps(num_inference_steps, **extra_set_kwargs)
 
-        iterator = tqdm.tqdm(scheduler.timesteps)
+        # iterator = tqdm.tqdm(scheduler.timesteps)
 
-        for i, t in enumerate(iterator):
-            latents = self._denoise_latent_step(
-                latents=latents,
-                t=t,
-                text_embeddings=text_embeddings,
-                cond_image=cldm_cond_image,
-                height=height,
-                width=width,
-                guidance_scale=guidance_scale,
-                use_inversion=use_ddim,
-            )
+        # for i, t in enumerate(iterator):
+        #     latents = self._denoise_latent_step(
+        #         latents=latents,
+        #         t=t,
+        #         text_embeddings=text_embeddings,
+        #         cond_image=cldm_cond_image,
+        #         height=height,
+        #         width=width,
+        #         guidance_scale=guidance_scale,
+        #         use_inversion=use_ddim,
+        #     )
 
-        image = self._latent_to_image(latents)
+        # image = self._latent_to_image(latents)
 
-        return image
+        # return image
 
     def _register_attention_refine(
         self,
