@@ -52,6 +52,11 @@ class TokenFlow(nn.Module):
         self.text_encoder = pipe.text_encoder
         self.unet = pipe.unet
 
+        ######### the module to train #########
+        # self.feature_process = Feature_process()
+       
+        #######################################
+
         self.scheduler = DDIMScheduler.from_pretrained(model_key, subfolder="scheduler")
         self.scheduler.set_timesteps(config["n_timesteps"], device=self.device)
         print('SD model loaded')
@@ -116,21 +121,21 @@ class TokenFlow(nn.Module):
         return inv_prompt
 
     def get_latents_path(self):
-        latents_path = os.path.join(config["latents_path"], f'sd_{config["sd_version"]}',
-                             Path(config["data_path"]).stem, f'steps_{config["n_inversion_steps"]}')
+        latents_path = os.path.join(self.config["latents_path"], f'sd_{self.config["sd_version"]}',
+                             Path(self.config["data_path"]).stem, f'steps_{self.config["n_inversion_steps"]}')
         latents_path = [x for x in glob.glob(f'{latents_path}/*') if '.' not in Path(x).name]
         n_frames = [int([x for x in latents_path[i].split('/') if 'nframes' in x][0].split('_')[1]) for i in range(len(latents_path))]
         latents_path = latents_path[np.argmax(n_frames)]
-        self.config["n_frames"] = min(max(n_frames), config["n_frames"])
+        self.config["n_frames"] = min(max(n_frames), self.config["n_frames"])
         if self.config["n_frames"] % self.config["batch_size"] != 0:
             # make n_frames divisible by batch_size
             self.config["n_frames"] = self.config["n_frames"] - (self.config["n_frames"] % self.config["batch_size"])
         print("Number of frames: ", self.config["n_frames"])
         return os.path.join(latents_path, 'latents')
 
-    ####################add image embedding using blip-2#######################
+    ####################add image embedding to text embedding using blip-2#######################
     @torch.no_grad()
-    def get_text_embeds(self, negative_prompt, prompt, batch_size=1):
+    def get_blip_text_embeds(self, negative_prompt, prompt, batch_size=1):
         from lavis.models import load_model_and_preprocess
 
         cond_image = Image.open("/home/flyvideo/PCH/diffusion/TokenFlow/data/wt.jpg").convert("RGB")
@@ -163,26 +168,30 @@ class TokenFlow(nn.Module):
             width=512,
             batch_size=batch_size,
         )
+        blip_diffusion = blip_diffusion.to("cpu")
+        blip_diffusion.requires_grad_(False)
+        # vis_preprocess = vis_preprocess.to("cpu")
+        # txt_preprocess = txt_preprocess.to("cpu")
         
         return text_embeddings
 
-    ##################origin####################
-    # @torch.no_grad()
-    # def get_text_embeds(self, negative_prompt, prompt, batch_size=1):
-    #     # Tokenize text and get embeddings
-    #     text_input = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
-    #                                 truncation=True, return_tensors='pt')
-    #     text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
+    ################## origin text embedding ####################
+    @torch.no_grad()
+    def get_text_embeds(self, negative_prompt, prompt, batch_size=1):
+        # Tokenize text and get embeddings
+        text_input = self.tokenizer(prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
+                                    truncation=True, return_tensors='pt')
+        text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
 
-    #     # Do the same for unconditional embeddings
-    #     uncond_input = self.tokenizer(negative_prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
-    #                                   return_tensors='pt')
+        # Do the same for unconditional embeddings
+        uncond_input = self.tokenizer(negative_prompt, padding='max_length', max_length=self.tokenizer.model_max_length,
+                                      return_tensors='pt')
 
-    #     uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
+        uncond_embeddings = self.text_encoder(uncond_input.input_ids.to(self.device))[0]
 
-    #     # Cat for final embeddings
-    #     text_embeddings = torch.cat([uncond_embeddings] * batch_size + [text_embeddings] * batch_size)
-    #     return text_embeddings
+        # Cat for final embeddings
+        text_embeddings = torch.cat([uncond_embeddings] * batch_size + [text_embeddings] * batch_size)
+        return text_embeddings
 
     @torch.no_grad()
     def encode_imgs(self, imgs, batch_size=VAE_BATCH_SIZE, deterministic=False):
@@ -208,18 +217,18 @@ class TokenFlow(nn.Module):
     
     def get_data(self):
         # load frames
-        paths = [os.path.join(config["data_path"], "%05d.jpg" % idx) for idx in
+        paths = [os.path.join(self.config["data_path"], "%05d.jpg" % idx) for idx in
                                range(self.config["n_frames"])]
         if not os.path.exists(paths[0]):
-            paths = [os.path.join(config["data_path"], "%05d.png" % idx) for idx in
+            paths = [os.path.join(self.config["data_path"], "%05d.png" % idx) for idx in
                                    range(self.config["n_frames"])]
         frames = [Image.open(paths[idx]).convert('RGB') for idx in range(self.config["n_frames"])]
         if frames[0].size[0] == frames[0].size[1]:
             frames = [frame.resize((512, 512), resample=Image.Resampling.LANCZOS) for frame in frames]
         frames = torch.stack([T.ToTensor()(frame) for frame in frames]).to(torch.float16).to(self.device)
-        save_video(frames, f'{self.config["output_path"]}/input_fps10.mp4', fps=10)
-        save_video(frames, f'{self.config["output_path"]}/input_fps20.mp4', fps=20)
-        save_video(frames, f'{self.config["output_path"]}/input_fps30.mp4', fps=30)
+        # save_video(frames, f'{self.config["output_path"]}/input_fps10.mp4', fps=10)
+        # save_video(frames, f'{self.config["output_path"]}/input_fps20.mp4', fps=20)
+        # save_video(frames, f'{self.config["output_path"]}/input_fps30.mp4', fps=30)
         # encode to latents
         latents = self.encode_imgs(frames, deterministic=True).to(torch.float16).to(self.device)        #(40, 4, 64, 64)
         # get noise
@@ -251,12 +260,23 @@ class TokenFlow(nn.Module):
                                                                                                             #1.5中dim=768，2.1中dim=1024
         
         #################### init conv add module ###############
-        cond_feature_map = torch.load(os.path.join(self.cond_feature_map_path, f"down_blocks2_resnets1_timestep_{t}.pt"))[0]    #(1280, 16, 16)
+        cond_feature_map = torch.load(os.path.join(self.cond_feature_map_path, f"down_blocks2_resnets1_timestep_{t}.pt"))    #(1, 1280, 16, 16)
         pnp_cond_t = int(self.config["n_timesteps"] * self.config["pnp_cond_t"])
         self.cond_add_timesteps = self.scheduler.timesteps[:pnp_cond_t]
-        register_conv_add(self, self.cond_add_timesteps, cond_feature_map)
-
+        # register_conv_add(self, self.cond_add_timesteps, cond_feature_map)
         #########################################################
+
+        ################## cond feature cross attn ##########
+        _ = self.unet(latent_model_input, t, encoder_hidden_states=text_embed_input)['sample']
+        d0r1_feature = self.unet.down_blocks[0].resnets[1].downsample_resnet_feature            #(15/24, 320, 64, 64)
+        d1r1_feature = self.unet.down_blocks[1].resnets[1].downsample_resnet_feature            #(15/24, 640, 32, 32)
+        d2r1_feature = self.unet.down_blocks[2].resnets[1].downsample_resnet_feature            #(15/24, 1280, 16, 16)
+        for i in range(3):
+            cond_feature = self.cross_n_res[i](cond_feature_map, d0r1_feature)
+            cond_feature = self.cross_n_res[i+3](cond_feature)
+        cond_feature = self.cross_n_res[6](cond_feature)
+        #####################################################
+
 
         # apply the denoising network
         noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embed_input)['sample']
@@ -289,6 +309,7 @@ class TokenFlow(nn.Module):
         self.conv_injection_timesteps = self.scheduler.timesteps[:conv_injection_t] if conv_injection_t >= 0 else []
         register_extended_attention_pnp(self, self.qk_injection_timesteps)
         register_conv_injection(self, self.conv_injection_timesteps)
+        register_feature_get(self)       #不影响前向过程，相当于给内部过程的feature做一个标记
         set_tokenflow(self.unet)
 
     def save_vae_recon(self):

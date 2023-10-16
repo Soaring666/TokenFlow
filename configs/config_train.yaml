@@ -1,0 +1,6 @@
+#Tokenflow model config
+model_config: "configs/config_pnp.yaml"
+output_dir: "train_feature_mix/man"
+prompt: "man"
+negative_prompt: ""
+batch_size: 5

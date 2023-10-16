@@ -1,0 +1,8 @@
+#Tokenflow model config
+model_config: "configs/config_pnp.yaml"
+model_path: "train_feature_mix/man"
+output_dir: "train_feature_mix/validation/man"
+prompt: "man"
+negative_prompt: ""
+batch_size: 5
+ref_path: "data/wt.jpg"

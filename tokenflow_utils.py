@@ -1,6 +1,8 @@
 from typing import Type
+from torch import nn
 import torch
 import os
+import torch.nn.functional as F
 
 from util import isinstance_str, batch_cosine_sim
 
@@ -49,6 +51,232 @@ def load_source_latents_t(t, latents_path):
     latents = torch.load(latents_t_path)
     return latents
 
+######## cross_attn and resnet for downsample_feature #####
+class CrossAttn_downfeature(nn.Module):
+    def __init__(
+        self,
+        query_dim: int,
+        cross_dim: int,
+        inner_dim: int,
+        layernorm_dim: int = 256,
+        heads: int = 8,
+        ):
+        super().__init__()
+        self.heads = heads
+        self.scale = 1.0
+        self.norm = nn.LayerNorm(layernorm_dim)
+
+        self.to_q = nn.Linear(query_dim, inner_dim)
+        self.to_k = nn.Linear(cross_dim, inner_dim)
+        self.to_v = nn.Linear(cross_dim, inner_dim)
+
+        self.to_out = nn.Linear(inner_dim, query_dim)
+
+        
+    def forward(self, hidden_states, encoder_hidden_states):
+        hidden_states = self.norm(hidden_states)
+        sequence_length_hidden = hidden_states.shape[1]
+        batch_size, sequence_length, _ = encoder_hidden_states.shape
+
+        hidden_states  = hidden_states.repeat(batch_size, 1, 1)
+        encoder_hidden_states = encoder_hidden_states.reshape(batch_size, sequence_length, -1)
+
+        inner_dim = hidden_states.shape[-1]
+
+        query = self.to_q(hidden_states)
+        key = self.to_k(encoder_hidden_states)
+        value = self.to_v(encoder_hidden_states)
+
+        head_dim = inner_dim // self.heads
+        query = query.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
+        key = key.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
+        value = value.view(batch_size, -1, self.heads, head_dim).transpose(1, 2)
+
+        hidden_states = F.scaled_dot_product_attention(
+            query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False
+        )       #一步完成注意力矩阵计算
+
+        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, self.heads * head_dim)
+        hidden_states = hidden_states.to(query.dtype)
+        hidden_states = self.to_out(hidden_states)      #(b, s, c)
+
+        return hidden_states
+
+class ResNet_downfeature(nn.Module):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        layernorm_dim: int =256,
+    ):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(layernorm_dim)
+        self.nonlinearity = nn.SiLU()
+        self.conv1 = torch.nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+
+        self.norm2 = nn.LayerNorm(layernorm_dim)
+        self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.conv_shortcut = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
+    def forward(self, input_tensor):
+        hidden_states = input_tensor
+        hidden_states = self.norm1(hidden_states)
+        hidden_states = self.nonlinearity(hidden_states)
+        hidden_states = self.conv1(hidden_states)
+
+        hidden_states = self.norm2(hidden_states)
+        hidden_states = self.nonlinearity(hidden_states)
+        hidden_states = self.conv2(hidden_states)
+
+        input_tensor = self.conv_shortcut(input_tensor)
+        output_tensor = input_tensor + hidden_states
+
+        return output_tensor
+################################################
+
+############# test the process of down sample feature ##########
+# class Feature_process(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         self.cross_attn0 = CrossAttn_downfeature(256, 4096, 256)
+#         self.cross_attn1 = CrossAttn_downfeature(256, 1024, 256)
+#         self.cross_attn2 = CrossAttn_downfeature(256, 256, 256)
+#         self.res_down0 = ResNet_downfeature(8, 8)
+#         self.res_down1 = ResNet_downfeature(8, 8)
+#         self.res_down2 = ResNet_downfeature(8, 8)
+#         self.res_down_final = ResNet_downfeature(24, 1)
+#         self.cross_n_res = [self.cross_attn0, self.cross_attn1, self.cross_attn2, 
+#                             self.res_down0, self.res_down1, self.res_down2,
+#                             self.res_down_final]
+    
+#     def forward(self):
+#         device = "cuda"
+#         a = torch.randn(8, 320, 4096).to(device)
+#         b = torch.randn(8, 640, 1024).to(device)
+#         c = torch.randn(8, 1280, 256).to(device)
+#         d = torch.randn(1, 1280, 256).to(device)
+#         a_list = [a, b, c]
+
+#         #process of feature
+#         cond_feature_list = []
+#         for i in range(3):
+#             cond_feature = self.cross_n_res[i](d, a_list[i])
+#             cond_feature = self.cross_n_res[i+3](cond_feature)
+#             cond_feature_list.append(cond_feature)
+#         cond_feature_all = torch.cat(cond_feature_list, dim=0)
+#         cond_feature_all = self.cross_n_res[6](cond_feature_all)
+#         cond_feature_all = cond_feature_all.reshape(cond_feature_all.shape[0], cond_feature_all.shape[1], 16, 16)       #(1, 1280, 16, 16)
+
+#         return cond_feature_all
+
+########################################################
+
+############# process the down sample feature ##########
+class Feature_process(nn.Module):
+    def __init__(self, batch_size):
+        super().__init__()
+        cross_attn0 = CrossAttn_downfeature(256, 4096, 256)
+        cross_attn1 = CrossAttn_downfeature(256, 1024, 256)
+        cross_attn2 = CrossAttn_downfeature(256, 256, 256)
+        res_down0 = ResNet_downfeature(batch_size, batch_size)
+        res_down1 = ResNet_downfeature(batch_size, batch_size)
+        res_down2 = ResNet_downfeature(batch_size, batch_size)
+        res_down_final = ResNet_downfeature(3*batch_size, 1)
+        cross_n_res = [cross_attn0, cross_attn1, cross_attn2, 
+                            res_down0, res_down1, res_down2,
+                            res_down_final]
+        self.cross_n_res = nn.ModuleList(cross_n_res)
+    
+    def forward(self, model, noisy_cond, noisy_batch, timesteps, text_embeds):
+        register_feature_get(model)       #不影响前向过程，相当于给内部过程的feature做一个标记
+
+        #get downsample feature
+        noise_cond_pred = model.unet(noisy_cond, timesteps, encoder_hidden_states=text_embeds)['sample']
+        cond_d2r1_feature = model.unet.down_blocks[2].resnets[1].downsample_resnet_feature            #(1, 1280, 16, 16)
+        cond_d2r1_feature = cond_d2r1_feature.reshape(cond_d2r1_feature.shape[0], cond_d2r1_feature.shape[1], -1)
+
+        noise_batch_pred = model.unet(noisy_batch, timesteps.repeat(noisy_batch.shape[0]), 
+                                        encoder_hidden_states=text_embeds.repeat(noisy_batch.shape[0], 1, 1))['sample']
+        batch_d0r1_feature = model.unet.down_blocks[0].resnets[1].downsample_resnet_feature            #(8, 320, 64, 64)
+        batch_d0r1_feature = batch_d0r1_feature.reshape(batch_d0r1_feature.shape[0], batch_d0r1_feature.shape[1], -1)   
+        batch_d1r1_feature = model.unet.down_blocks[1].resnets[1].downsample_resnet_feature            #(8, 640, 32, 32)
+        batch_d1r1_feature = batch_d1r1_feature.reshape(batch_d1r1_feature.shape[0], batch_d1r1_feature.shape[1], -1) 
+        batch_d2r1_feature = model.unet.down_blocks[2].resnets[1].downsample_resnet_feature            #(8, 1280, 16, 16)
+        batch_d2r1_feature = batch_d2r1_feature.reshape(batch_d2r1_feature.shape[0], batch_d2r1_feature.shape[1], -1)
+        batch_down_feature = [batch_d0r1_feature, batch_d1r1_feature, batch_d2r1_feature]
+
+        #process of feature
+        cond_feature_list = []
+        for i in range(3):
+            cond_feature = self.cross_n_res[i](cond_d2r1_feature.detach().to(torch.float32), batch_down_feature[i].detach().to(torch.float32))
+            cond_feature = self.cross_n_res[i+3](cond_feature)
+            cond_feature_list.append(cond_feature)
+        cond_feature_all = torch.cat(cond_feature_list, dim=0)
+        cond_feature_all = self.cross_n_res[6](cond_feature_all)
+        cond_feature_all = cond_feature_all.reshape(cond_feature_all.shape[0], cond_feature_all.shape[1], 16, 16)       #(1, 1280, 16, 16)
+
+        register_conv_origin(model)
+
+        return cond_feature_all
+
+########################################################
+
+
+######## get downsample_feature ######
+def register_feature_get(model):
+    def conv_forward(self):
+        def forward(input_tensor, temb):
+            hidden_states = input_tensor
+
+            hidden_states = self.norm1(hidden_states)
+            hidden_states = self.nonlinearity(hidden_states)
+
+            if self.upsample is not None:
+                # upsample_nearest_nhwc fails with large batch sizes. see https://github.com/huggingface/diffusers/issues/984
+                if hidden_states.shape[0] >= 64:
+                    input_tensor = input_tensor.contiguous()
+                    hidden_states = hidden_states.contiguous()
+                input_tensor = self.upsample(input_tensor)
+                hidden_states = self.upsample(hidden_states)
+            elif self.downsample is not None:
+                input_tensor = self.downsample(input_tensor)
+                hidden_states = self.downsample(hidden_states)
+
+            hidden_states = self.conv1(hidden_states)
+
+            if temb is not None:
+                temb = self.time_emb_proj(self.nonlinearity(temb))[:, :, None, None]
+
+            if temb is not None and self.time_embedding_norm == "default":
+                hidden_states = hidden_states + temb
+
+            hidden_states = self.norm2(hidden_states)
+
+            if temb is not None and self.time_embedding_norm == "scale_shift":
+                scale, shift = torch.chunk(temb, 2, dim=1)
+                hidden_states = hidden_states * (1 + scale) + shift
+
+            hidden_states = self.nonlinearity(hidden_states)
+
+            hidden_states = self.dropout(hidden_states)
+            hidden_states = self.conv2(hidden_states)
+
+            ########## mark resnet feature ###########
+            self.downsample_resnet_feature = hidden_states
+            ##########################################
+
+            if self.conv_shortcut is not None:
+                input_tensor = self.conv_shortcut(input_tensor)
+
+            output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
+
+            return output_tensor
+
+        return forward
+
+    for i in range(3):
+        conv_module = model.unet.down_blocks[i].resnets[1]
+        conv_module.forward = conv_forward(conv_module)
+######################
 
 ########conv add######
 def register_conv_add(model, add_schedule, cond_feature):
@@ -93,18 +321,19 @@ def register_conv_add(model, add_schedule, cond_feature):
                 input_tensor = self.conv_shortcut(input_tensor)
 
             ################ use cond feature and gen feature ########
-            if self.t in self.add_schedule:
-                w1 = 0.1
-                w2 = 0.9
-                batch_size, _, _, _ = hidden_states.shape
-                per_batch = int(batch_size // 3)
-                self.cond_feature = self.cond_feature.unsqueeze(0).repeat(batch_size, 1, 1, 1)
-                new_states = w1 * self.cond_feature + w2 * hidden_states
-                # hidden_states[per_batch:] = new_states[per_batch:]        #在上采样的时候还会被重新替换，因此这边替换基本没有作用
-                hidden_states = new_states
+            # if self.t in self.add_schedule:
+            w1 = 1
+            w2 = 0
+            batch_size, _, _, _ = hidden_states.shape
+            per_batch = int(batch_size // 3)
+            self.cond_feature = self.cond_feature.repeat(batch_size, 1, 1, 1)
+            new_states = w1 * self.cond_feature + w2 * hidden_states
+            # hidden_states[per_batch:] = new_states[per_batch:]        #在上采样的时候还会被重新替换，因此这边替换基本没有作用
+            hidden_states = new_states
             ##########################################################
 
             output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
+            output_tensor = output_tensor.to(torch.float16)
 
             return output_tensor
 
@@ -114,6 +343,58 @@ def register_conv_add(model, add_schedule, cond_feature):
     conv_module.forward = conv_forward(conv_module)
     setattr(conv_module, 'add_schedule', add_schedule)
     setattr(conv_module, 'cond_feature', cond_feature)
+######################
+
+########conv origin######
+def register_conv_origin(model):
+    def conv_forward(self):
+        def forward(input_tensor, temb):
+            hidden_states = input_tensor
+
+            hidden_states = self.norm1(hidden_states)
+            hidden_states = self.nonlinearity(hidden_states)
+
+            if self.upsample is not None:
+                # upsample_nearest_nhwc fails with large batch sizes. see https://github.com/huggingface/diffusers/issues/984
+                if hidden_states.shape[0] >= 64:
+                    input_tensor = input_tensor.contiguous()
+                    hidden_states = hidden_states.contiguous()
+                input_tensor = self.upsample(input_tensor)
+                hidden_states = self.upsample(hidden_states)
+            elif self.downsample is not None:
+                input_tensor = self.downsample(input_tensor)
+                hidden_states = self.downsample(hidden_states)
+
+            hidden_states = self.conv1(hidden_states)
+
+            if temb is not None:
+                temb = self.time_emb_proj(self.nonlinearity(temb))[:, :, None, None]
+
+            if temb is not None and self.time_embedding_norm == "default":
+                hidden_states = hidden_states + temb
+
+            hidden_states = self.norm2(hidden_states)
+
+            if temb is not None and self.time_embedding_norm == "scale_shift":
+                scale, shift = torch.chunk(temb, 2, dim=1)
+                hidden_states = hidden_states * (1 + scale) + shift
+
+            hidden_states = self.nonlinearity(hidden_states)
+
+            hidden_states = self.dropout(hidden_states)
+            hidden_states = self.conv2(hidden_states)
+
+            if self.conv_shortcut is not None:
+                input_tensor = self.conv_shortcut(input_tensor)
+
+            output_tensor = (input_tensor + hidden_states) / self.output_scale_factor
+
+            return output_tensor
+
+        return forward
+
+    conv_module = model.unet.down_blocks[2].resnets[1]
+    conv_module.forward = conv_forward(conv_module)
 ######################
 
 def register_conv_injection(model, injection_schedule):
