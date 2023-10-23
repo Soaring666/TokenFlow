@@ -213,7 +213,7 @@ def ddim_sample_condimage(train_model, model, x, cond, train_dataset, batch_size
             x[b:b + batch_size] = mu_prev * pred_x0 + sigma_prev * eps
     return x
 
-def main(
+def train(
     model_config: str,
     output_dir: str = "train_feature_mix/man",
     prompt: str = "man",
@@ -335,8 +335,8 @@ def main(
             #recover the forward process
             register_conv_origin(model)
 
-            loss = F.mse_loss(cond_feature, torch.zeros_like(cond_feature), reduction="mean")
-            # loss = F.mse_loss(noise_batch_pred, noise.repeat(batch.shape[0], 1, 1, 1), reduction="mean")
+            # loss = F.mse_loss(cond_feature, torch.zeros_like(cond_feature), reduction="mean")
+            loss = F.mse_loss(noise_batch_pred, noise.repeat(batch.shape[0], 1, 1, 1), reduction="mean")
             # accelerator.backward(loss)
             with torch.no_grad():
                 loss.backward()
@@ -355,27 +355,27 @@ def main(
     # accelerator.save_state(save_path)
     logger.info(f"Saved state to {save_path}")
 
-    #validation process
-    register_conv_origin(model)
+    # #validation process
+    # register_conv_origin(model)
     
-    #get latent
-    batch_list = []
-    for i, batch in enumerate(train_dataloader):
-        batch_list.append(batch)
-    batch_all = torch.cat(batch_list, dim=0).to(device)
-    latent_all = encode_imgs(batch_all, model.vae)            #(40, 4, 64, 64)
+    # #get latent
+    # batch_list = []
+    # for i, batch in enumerate(train_dataloader):
+    #     batch_list.append(batch)
+    # batch_all = torch.cat(batch_list, dim=0).to(device)
+    # latent_all = encode_imgs(batch_all, model.vae)            #(40, 4, 64, 64)
 
-    logger.info("*****running validation of ref image from origin video*****")
-    inv_embed = get_text_embeds(model.tokenizer, model.text_encoder, negative_prompt, prompt)[0]
-    inverted_x = ddim_inversion(model, inv_embed, latent_all, batch_size=8)
-    latent_reconstruction = ddim_sample_condimage(train_model, model, inverted_x, inv_embed, batch_size=8)
-    latent_reconstruction = torch.cat(latent_reconstruction)
-    decoded_latents = decode_latents(latent_reconstruction)
-    for i in range(len(latent_reconstruction)):
-        T.ToPILImage()(decoded_latents[i]).save(f'{output_dir}/img_ode/%05d.png' % i)
-    save_video(decode_latents, f'{output_dir}/validation_out_fps_10.mp4')
+    # logger.info("*****running validation of ref image from origin video*****")
+    # inv_embed = get_text_embeds(model.tokenizer, model.text_encoder, negative_prompt, prompt)[0]
+    # inverted_x = ddim_inversion(model, inv_embed, latent_all, batch_size=8)
+    # latent_reconstruction = ddim_sample_condimage(train_model, model, inverted_x, inv_embed, batch_size=8)
+    # latent_reconstruction = torch.cat(latent_reconstruction)
+    # decoded_latents = decode_latents(latent_reconstruction)
+    # for i in range(len(latent_reconstruction)):
+    #     T.ToPILImage()(decoded_latents[i]).save(f'{output_dir}/img_ode/%05d.png' % i)
+    # save_video(decode_latents, f'{output_dir}/validation_out_fps_10.mp4')
 
-    logger.info("*****running validation of new ref image*****")
+    # logger.info("*****running validation of new ref image*****")
 
 def validate(
     model_config: str,
@@ -437,7 +437,9 @@ def validate(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/config_validation.yaml")
+    parser.add_argument("--train", action="store_true")
+    parser.add_argument("--train_config", type=str, default="configs/config_train.yaml")
+    parser.add_argument("--validate_config", type=str, default="configs/config_validation.yaml")
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -447,7 +449,12 @@ if __name__ == "__main__":
     )
     logger = logging.getLogger('my_logger')
 
-    config = OmegaConf.load(args.config)
-    validate(**config)
-    # main(**config)
+    if args.train:
+        logger.info("******* train process ********")
+        config = OmegaConf.load(args.train_config)
+        train(**config)
+    else:
+        logger.info("******* validation process ********")
+        config = OmegaConf.load(args.validate_config)
+        validate(**config)
     # Mytest()

@@ -1,7 +1,8 @@
 # general
 seed: 1
 device: 'cuda'
-output_path: 'tokenflow-blip-cond_image-results'
+# output_path: 'tokenflow-dreambooth-results'
+output_path: 'tokenflow-results'
 
 # data
 data_path: 'data/cxk'
@@ -17,7 +18,7 @@ pnp_cond_t: 1
 sd_version: '1.5'
 guidance_scale: 7.5
 n_timesteps: 50
-prompt: "playing ball"
+prompt: "a bat man playing ball"
 negative_prompt: "ugly, blurry, low res, unrealistic, unaesthetic"
 batch_size: 8
 

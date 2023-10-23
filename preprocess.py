@@ -337,7 +337,7 @@ if __name__ == "__main__":
     device = 'cuda'
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_path', type=str,
-                        default='data/cxk.mp4') 
+                        default='data/cxk_125.mp4') 
     parser.add_argument('--H', type=int, default=512, 
                         help='for non-square videos, we recommand using 672 x 384 or 384 x 672, aspect ratio 1.75')
     parser.add_argument('--W', type=int, default=512, 
@@ -346,10 +346,10 @@ if __name__ == "__main__":
     parser.add_argument('--sd_version', type=str, default='1.5', choices=['1.5', '2.0', '2.1', 'ControlNet', 'depth'],
                         help="stable diffusion version")
     parser.add_argument('--steps', type=int, default=500)
-    parser.add_argument('--batch_size', type=int, default=40)
-    parser.add_argument('--save_steps', type=int, default=50)
-    parser.add_argument('--n_frames', type=int, default=40)
-    parser.add_argument('--inversion_prompt', type=str, default='man playing ball')     #预处理的过程相当于使用该prompt完成了一次自编码过程
+    parser.add_argument('--batch_size', type=int, default=125)
+    parser.add_argument('--save_steps', type=int, default=100)
+    parser.add_argument('--n_frames', type=int, default=125)
+    parser.add_argument('--inversion_prompt', type=str, default='a man playing ball')     #预处理的过程相当于使用该prompt完成了一次自编码过程
     opt = parser.parse_args()
     video_path = opt.data_path
     save_video_frames(video_path, img_size=(opt.W, opt.H))

@@ -174,16 +174,17 @@ class ResNet_downfeature(nn.Module):
 class Feature_process(nn.Module):
     def __init__(self, batch_size):
         super().__init__()
-        cross_attn0 = CrossAttn_downfeature(256, 4096, 256)
-        cross_attn1 = CrossAttn_downfeature(256, 1024, 256)
+        # cross_attn0 = CrossAttn_downfeature(256, 4096, 256)
+        # cross_attn1 = CrossAttn_downfeature(256, 1024, 256)
         cross_attn2 = CrossAttn_downfeature(256, 256, 256)
-        res_down0 = ResNet_downfeature(batch_size, batch_size)
-        res_down1 = ResNet_downfeature(batch_size, batch_size)
+        # res_down0 = ResNet_downfeature(batch_size, batch_size)
+        # res_down1 = ResNet_downfeature(batch_size, batch_size)
         res_down2 = ResNet_downfeature(batch_size, batch_size)
-        res_down_final = ResNet_downfeature(3*batch_size, 1)
-        cross_n_res = [cross_attn0, cross_attn1, cross_attn2, 
-                            res_down0, res_down1, res_down2,
-                            res_down_final]
+        res_down_final = ResNet_downfeature(batch_size, 1)
+        # cross_n_res = [cross_attn0, cross_attn1, cross_attn2, 
+        #                     res_down0, res_down1, res_down2,
+        #                     res_down_final]
+        cross_n_res = [cross_attn2, res_down2, res_down_final]
         self.cross_n_res = nn.ModuleList(cross_n_res)
     
     def forward(self, model, noisy_cond, noisy_batch, timesteps, text_embeds):
@@ -206,12 +207,12 @@ class Feature_process(nn.Module):
 
         #process of feature
         cond_feature_list = []
-        for i in range(3):
-            cond_feature = self.cross_n_res[i](cond_d2r1_feature.detach().to(torch.float32), batch_down_feature[i].detach().to(torch.float32))
-            cond_feature = self.cross_n_res[i+3](cond_feature)
+        for i in range(1):
+            cond_feature = self.cross_n_res[i](cond_d2r1_feature.detach().to(torch.float32), batch_down_feature[2].detach().to(torch.float32))
+            cond_feature = self.cross_n_res[i+1](cond_feature)
             cond_feature_list.append(cond_feature)
         cond_feature_all = torch.cat(cond_feature_list, dim=0)
-        cond_feature_all = self.cross_n_res[6](cond_feature_all)
+        cond_feature_all = self.cross_n_res[2](cond_feature_all)
         cond_feature_all = cond_feature_all.reshape(cond_feature_all.shape[0], cond_feature_all.shape[1], 16, 16)       #(1, 1280, 16, 16)
 
         register_conv_origin(model)
@@ -345,7 +346,7 @@ def register_conv_add(model, add_schedule, cond_feature):
     setattr(conv_module, 'cond_feature', cond_feature)
 ######################
 
-########conv origin######
+########conv recover origin######
 def register_conv_origin(model):
     def conv_forward(self):
         def forward(input_tensor, temb):

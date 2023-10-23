@@ -35,6 +35,7 @@ class TokenFlow(nn.Module):
         elif sd_version == '2.0':
             model_key = "stabilityai/stable-diffusion-2-base"
         elif sd_version == '1.5':
+            # model_key = "/home/flyvideo/PCH/diffusion/Dreambooth-diffusers/dreambooth-output/xiaoyan"
             model_key = "/home/flyvideo/PCH/diffusion/stable-diffusion/stable-diffusion-v1-5"
         elif sd_version == 'depth':
             model_key = "stabilityai/stable-diffusion-2-depth"
@@ -138,7 +139,7 @@ class TokenFlow(nn.Module):
     def get_blip_text_embeds(self, negative_prompt, prompt, batch_size=1):
         from lavis.models import load_model_and_preprocess
 
-        cond_image = Image.open("/home/flyvideo/PCH/diffusion/TokenFlow/data/wt.jpg").convert("RGB")
+        cond_image = Image.open("/home/flyvideo/PCH/diffusion/Dreambooth-diffusers/data/instance_dir/xiaoyan/0.jpg").convert("RGB")
         cond_subject = "man"
         tgt_subject = "man"                     #generate object
         # prompt = "running on the road"      #prompt to describe generate image
@@ -226,9 +227,9 @@ class TokenFlow(nn.Module):
         if frames[0].size[0] == frames[0].size[1]:
             frames = [frame.resize((512, 512), resample=Image.Resampling.LANCZOS) for frame in frames]
         frames = torch.stack([T.ToTensor()(frame) for frame in frames]).to(torch.float16).to(self.device)
-        # save_video(frames, f'{self.config["output_path"]}/input_fps10.mp4', fps=10)
-        # save_video(frames, f'{self.config["output_path"]}/input_fps20.mp4', fps=20)
-        # save_video(frames, f'{self.config["output_path"]}/input_fps30.mp4', fps=30)
+        save_video(frames, f'{self.config["output_path"]}/input_fps10.mp4', fps=10)
+        save_video(frames, f'{self.config["output_path"]}/input_fps20.mp4', fps=20)
+        save_video(frames, f'{self.config["output_path"]}/input_fps30.mp4', fps=30)
         # encode to latents
         latents = self.encode_imgs(frames, deterministic=True).to(torch.float16).to(self.device)        #(40, 4, 64, 64)
         # get noise
@@ -260,21 +261,21 @@ class TokenFlow(nn.Module):
                                                                                                             #1.5中dim=768，2.1中dim=1024
         
         #################### init conv add module ###############
-        cond_feature_map = torch.load(os.path.join(self.cond_feature_map_path, f"down_blocks2_resnets1_timestep_{t}.pt"))    #(1, 1280, 16, 16)
-        pnp_cond_t = int(self.config["n_timesteps"] * self.config["pnp_cond_t"])
-        self.cond_add_timesteps = self.scheduler.timesteps[:pnp_cond_t]
-        # register_conv_add(self, self.cond_add_timesteps, cond_feature_map)
-        #########################################################
+        # cond_feature_map = torch.load(os.path.join(self.cond_feature_map_path, f"down_blocks2_resnets1_timestep_{t}.pt"))    #(1, 1280, 16, 16)
+        # pnp_cond_t = int(self.config["n_timesteps"] * self.config["pnp_cond_t"])
+        # self.cond_add_timesteps = self.scheduler.timesteps[:pnp_cond_t]
+        # # register_conv_add(self, self.cond_add_timesteps, cond_feature_map)
+        # #########################################################
 
-        ################## cond feature cross attn ##########
-        _ = self.unet(latent_model_input, t, encoder_hidden_states=text_embed_input)['sample']
-        d0r1_feature = self.unet.down_blocks[0].resnets[1].downsample_resnet_feature            #(15/24, 320, 64, 64)
-        d1r1_feature = self.unet.down_blocks[1].resnets[1].downsample_resnet_feature            #(15/24, 640, 32, 32)
-        d2r1_feature = self.unet.down_blocks[2].resnets[1].downsample_resnet_feature            #(15/24, 1280, 16, 16)
-        for i in range(3):
-            cond_feature = self.cross_n_res[i](cond_feature_map, d0r1_feature)
-            cond_feature = self.cross_n_res[i+3](cond_feature)
-        cond_feature = self.cross_n_res[6](cond_feature)
+        # ################## cond feature cross attn ##########
+        # _ = self.unet(latent_model_input, t, encoder_hidden_states=text_embed_input)['sample']
+        # d0r1_feature = self.unet.down_blocks[0].resnets[1].downsample_resnet_feature            #(15/24, 320, 64, 64)
+        # d1r1_feature = self.unet.down_blocks[1].resnets[1].downsample_resnet_feature            #(15/24, 640, 32, 32)
+        # d2r1_feature = self.unet.down_blocks[2].resnets[1].downsample_resnet_feature            #(15/24, 1280, 16, 16)
+        # for i in range(3):
+        #     cond_feature = self.cross_n_res[i](cond_feature_map, d0r1_feature)
+        #     cond_feature = self.cross_n_res[i+3](cond_feature)
+        # cond_feature = self.cross_n_res[6](cond_feature)
         #####################################################
 
 
@@ -309,7 +310,7 @@ class TokenFlow(nn.Module):
         self.conv_injection_timesteps = self.scheduler.timesteps[:conv_injection_t] if conv_injection_t >= 0 else []
         register_extended_attention_pnp(self, self.qk_injection_timesteps)
         register_conv_injection(self, self.conv_injection_timesteps)
-        register_feature_get(self)       #不影响前向过程，相当于给内部过程的feature做一个标记
+        # register_feature_get(self)       #不影响前向过程，相当于给内部过程的feature做一个标记
         set_tokenflow(self.unet)
 
     def save_vae_recon(self):
@@ -345,10 +346,6 @@ class TokenFlow(nn.Module):
 
         return decoded_latents
 
-    ###############get obj image embedding in unet############   
-    def get_cond_feature(self,):
-        cond_image = Image.open("/home/flyvideo/PCH/diffusion/TokenFlow/data/wt.jpg").convert("RGB")
-        pass
 
 
 def run(config):
